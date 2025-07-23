@@ -65,6 +65,11 @@ import { judgePose } from '../utils/poseJudge'
 // rPPG worker
 import RppgWorker from '../workers/rppgWorker.ts?worker'
 import { sendHR } from '../utils/sendHR'
+// Piniaストアをインポート
+import { useUserState } from '../stores/userState'
+
+// Piniaストアのインスタンスを取得
+const userState = useUserState()
 
 // ======= props / emit =======
 const props = defineProps<{ bpm: number }>()
@@ -155,7 +160,9 @@ rppgWorker.onmessage = (e: MessageEvent) => {
       else prevBpm = prevBpm * (1 - SMOOTH_ALPHA) + rawBpm * SMOOTH_ALPHA
       const rounded = Math.round(prevBpm)
       displayBpm.value = rounded
-      ;(window as any).__HR_BPM__ = rounded
+      
+      // ★修正点: windowオブジェクトではなくPiniaストアを更新
+      userState.updateState({ heartRate: rounded })
 
       const now = performance.now()
       if (now - lastHrPostTime > HR_SEND_INTERVAL) {
@@ -219,7 +226,8 @@ function nextSeg() {
 
   const seg = segments.value[currentIndex.value]
   if (seg) {
-    ;(window as any).__EX_INTENSITY__ = seg.intensity
+    // ★修正点: windowオブジェクトではなくPiniaストアを更新
+    userState.updateState({ exerciseIntensity: seg.intensity })
   }
 }
 
@@ -417,7 +425,8 @@ onMounted(async () => {
   await preloadTemplates()
 
   if (segments.value.length) {
-    ;(window as any).__EX_INTENSITY__ = segments.value[0].intensity
+    // ★修正点: windowオブジェクトではなくPiniaストアを更新
+    userState.updateState({ exerciseIntensity: segments.value[0].intensity })
   }
 
   segmentStartTime = performance.now()

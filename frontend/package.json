@@ -8,6 +8,7 @@
   "dependencies": {
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/pose": "^0.5.1675469404",
+    "pinia": "^3.0.3",
     "axios": "^1.10.0",
     "vue": "^3.2.0"
   },

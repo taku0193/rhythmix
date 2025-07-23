@@ -1,5 +1,6 @@
 // src/composables/useAutoMusic.ts
-import { ref,watch } from 'vue'
+import { ref, watch } from 'vue'
+import { useUserState } from '../stores/userState'
 
 export interface AutoParams {
   prompt?: string
@@ -21,6 +22,8 @@ interface JobStatusRes {
 }
 
 export function useAutoMusic() {
+  const userState = useUserState() // Piniaストアを取得
+
   const currentEl = ref<HTMLAudioElement | null>(null)
   const nextEl = ref<HTMLAudioElement | null>(null)
 
@@ -70,16 +73,14 @@ export function useAutoMusic() {
   async function requestNext(params: AutoParams) {
     generating.value = true
     try {
-      const globalHr = (window as any).__HR_BPM__ ?? undefined
-      const globalIntensity = (window as any).__EX_INTENSITY__ ?? undefined
-
-      // **ここがポイント**：prompt が無ければ '' を送ってバックエンドに任せる
+      // ★修正点: windowオブジェクトではなくPiniaストアから値を取得
       const body = JSON.stringify({
         prompt: params.prompt ?? '',
         duration: params.duration,
         bpm: params.bpm,
-        hr: params.hr ?? globalHr,
-        intensity: params.intensity ?? globalIntensity,
+        hr: params.hr ?? userState.heartRate,
+        intensity: params.intensity ?? userState.exerciseIntensity,
+        last_prompt: userState.lastMusicPrompt, // 前回のプロンプトを追加
       })
 
       const res = await fetch('/api/music-jobs', {
@@ -111,10 +112,13 @@ export function useAutoMusic() {
           nextBpm.value = data.bpm ?? null
           nextPrompt.value = data.prompt ?? null
 
-          // ★ 実際のプロンプトをコンソールに出す
+          // ★修正点: windowオブジェクトではなくPiniaストアを更新
+          if (data.prompt) {
+            userState.setLastMusicPrompt(data.prompt)
+          }
+
           console.debug('[MusicGen Prompt]', data.prompt)
           console.log('[MusicGen JobData]', data)
-          ;(window as any).__LAST_MUSIC_PROMPT__ = data.prompt
 
           generating.value = false
           switchNow()

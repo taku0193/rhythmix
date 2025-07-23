@@ -30,21 +30,33 @@ BASE_DIR = Path(__file__).resolve().parents[1]          # backend/
 AUDIO_DIR = BASE_DIR / "static" / "audio"
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-# ========= 状態保持 =========
-FIRST_USER_PROMPT: Optional[str] = None
-LAST_PROMPT: Optional[str] = None
-LAST_BPM: Optional[int] = None
-LAST_HR: Optional[int] = None
-LAST_INTENSITY: Optional[float] = None
+# ★修正点: 状態を保持するグローバル変数をすべて削除
+# FIRST_USER_PROMPT: Optional[str] = None
+# LAST_PROMPT: Optional[str] = None
+# LAST_BPM: Optional[int] = None
+# LAST_HR: Optional[int] = None
+# LAST_INTENSITY: Optional[float] = None
 
 
 # ========= Core functions =========
 def generate_wav_np(prompt: str, duration: int) -> np.ndarray:
     safe_duration = min(duration, 30)
-    max_new_tokens = int(safe_duration * 50)
+    # MusicGen v3.7から `max_new_tokens` は非推奨になったため、 `do_sample` を使う
+    # max_new_tokens = int(safe_duration * 50) 
+    guidance_scale = 3.0 # プロンプトへの忠実度
 
     inputs = _processor(text=[prompt], padding=True, return_tensors="pt").to(_device)
-    audio_values = _model.generate(**inputs, max_new_tokens=max_new_tokens)
+    
+    # 生成するトークン数を計算 (duration * sampling_rate / model_hop_length)
+    # MusicGen Largeのhop_lengthは50
+    max_new_tokens = int(safe_duration * _model.config.audio_encoder.sampling_rate / 50)
+
+    audio_values = _model.generate(
+        **inputs, 
+        do_sample=True, 
+        guidance_scale=guidance_scale, 
+        max_new_tokens=max_new_tokens
+    )
     wav_np = audio_values[0, 0].cpu().numpy()
     if wav_np.dtype == np.float16:
         wav_np = wav_np.astype(np.float32)
@@ -56,7 +68,7 @@ def save_wav_and_estimate_bpm(wav_np: np.ndarray) -> Tuple[str, int]:
     fpath = AUDIO_DIR / fname
     scipy.io.wavfile.write(fpath, SAMPLING_RATE, wav_np)
 
-    y, sr = librosa.load(fpath, sr=SAMPLING_RATE)
+    y, sr = librosa.load(str(fpath), sr=SAMPLING_RATE)
     tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
     bpm_est = int(round(float(tempo))) if np.isfinite(tempo) else 120
     return f"/static/audio/{fname}", bpm_est
@@ -89,8 +101,10 @@ def build_prompt(
     hr: Optional[int],
     intensity: Optional[float],
     prev_bpm: Optional[int],
-    prev_prompt: Optional[str],
-    first_user_prompt: Optional[str],
+    # ★修正点: 引数名を `prev_prompt` から `last_prompt` に変更して分かりやすくする
+    last_prompt: Optional[str],
+    # ★修正点: first_user_prompt はクライアント側で管理・送信される想定だったが、
+    # シンプルにするため last_prompt からの連続性を重視するロジックに変更
     duration: Optional[int] = None,
     job_id: Optional[str] = None,
 ) -> str:
@@ -113,11 +127,12 @@ def build_prompt(
         return prompt_out
 
     # 自動生成
-    base_style = "energetic electronic track"
-    if first_user_prompt:
-        base_style = f"{first_user_prompt}, coherent continuation"
-    elif prev_prompt:
-        base_style = f"{prev_prompt}, continuous mix"
+    # ★修正点: last_prompt を使って連続性のあるプロンプトを生成
+    if last_prompt:
+        base_style = f"{last_prompt}, continuous mix, seamless transition"
+    else:
+        base_style = "energetic electronic track"
+
 
     mood = pick_mood(hr, intensity)
     bpm_hint = f", tempo near {prev_bpm} BPM" if prev_bpm else ""

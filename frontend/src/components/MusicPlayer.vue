@@ -20,11 +20,20 @@
 <script setup lang="ts">
 import { ref, onBeforeUnmount } from 'vue'
 import { useCrossfadePlayer } from '../composables/useCrossfadePlayer'
+import { useUserState } from '../stores/userState'
 
-interface GenerateBgmResponse {
-  success: boolean
-  url: string
-  bpm: number
+// ★ Piniaストアのインスタンスを取得
+const userState = useUserState()
+
+// APIのレスポンス型定義
+interface JobCreateRes {
+  job_id: string
+}
+interface JobStatusRes {
+  status: 'queue' | 'running' | 'done' | 'error'
+  url?: string
+  error?: string
+  bpm?: number
   prompt?: string
 }
 
@@ -45,17 +54,22 @@ async function startFlow() {
   loading.value = true
   error.value = ''
   try {
-    const first = await requestBgm({
+    const first = await requestBgmAsJob({
       prompt: userPrompt.value,          // 1曲目はユーザープロンプト
       duration: duration.value,
-      hr: (window as any).__HR_BPM__ ?? undefined,
-      intensity: (window as any).__EX_INTENSITY__ ?? undefined,
-      bpm: undefined,
+      // ★ Piniaストアから値を取得
+      hr: userState.heartRate,
+      intensity: userState.exerciseIntensity,
+      last_prompt: userState.lastMusicPrompt,
     })
 
     await playFirst(first.url)
     currentBpm = first.bpm
     isRunning.value = true
+    // ★ ストアのlastMusicPromptを更新
+    if (first.prompt) {
+      userState.setLastMusicPrompt(first.prompt)
+    }
 
     prefetchNext()
     startRemainWatcher()
@@ -97,15 +111,21 @@ function stopRemainWatcher() {
 
 async function prefetchNext() {
   try {
-    const next = await requestBgm({
+    const next = await requestBgmAsJob({
       prompt: '', // ★空で送ってバックエンドに任せる
       duration: duration.value,
       bpm: currentBpm || undefined,
-      hr: (window as any).__HR_BPM__ ?? undefined,
-      intensity: (window as any).__EX_INTENSITY__ ?? undefined,
+      // ★ Piniaストアから値を取得
+      hr: userState.heartRate,
+      intensity: userState.exerciseIntensity,
+      last_prompt: userState.lastMusicPrompt,
     })
     nextTrackUrl = next.url
     nextTrackBpm = next.bpm
+    // ★ ストアのlastMusicPromptを更新
+    if (next.prompt) {
+      userState.setLastMusicPrompt(next.prompt)
+    }
   } catch (e) {
     console.error('next gen failed', e)
     setTimeout(prefetchNext, 5000)
@@ -137,33 +157,64 @@ async function swapToNext(fadeSec: number) {
   }
 }
 
-/** 同期API版。ジョブ方式ならここを差し替え */
-async function requestBgm(params: {
+/**
+ * ★修正点: API呼び出しを非同期ジョブ方式に統一
+ * BGM生成をリクエストし、完了までポーリングする
+ */
+async function requestBgmAsJob(params: {
   prompt?: string
   duration: number
   bpm?: number
   hr?: number
   intensity?: number
-}): Promise<{ url: string; bpm: number }> {
-  const body = {
-    prompt: params.prompt ?? '',
-    duration: params.duration,
-    bpm: params.bpm,
-    hr: params.hr,
-    intensity: params.intensity,
-  }
-  const res = await fetch('/api/generate-bgm', {
+  last_prompt?: string
+}): Promise<{ url:string; bpm: number; prompt?: string }> {
+  // 1. ジョブの作成をリクエスト
+  const createRes = await fetch('/api/music-jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      prompt: params.prompt ?? '',
+      duration: params.duration,
+      bpm: params.bpm,
+      hr: params.hr,
+      intensity: params.intensity,
+      last_prompt: params.last_prompt,
+    }),
   })
-  if (!res.ok) {
-    const detail = await res.text()
-    throw new Error(detail || `HTTP ${res.status}`)
+  if (!createRes.ok) {
+    throw new Error(`ジョブ作成失敗: HTTP ${createRes.status}`)
   }
-  const data = (await res.json()) as GenerateBgmResponse
-  if (!data.success) throw new Error('Generation failed')
-  return { url: data.url, bpm: data.bpm }
+  const { job_id } = (await createRes.json()) as JobCreateRes
+
+  // 2. ジョブの完了をポーリング
+  return new Promise((resolve, reject) => {
+    const poll = async () => {
+      try {
+        const statusRes = await fetch(`/api/music-jobs/${job_id}`)
+        if (!statusRes.ok) throw new Error(`ポーリング失敗: HTTP ${statusRes.status}`)
+        const data = (await statusRes.json()) as JobStatusRes
+
+        if (data.status === 'done') {
+          if (!data.url || !data.bpm) {
+            return reject(new Error('APIレスポンスにURLまたはBPMが含まれていません'))
+          }
+          // URLの整形
+          const url = data.url.startsWith('http')
+            ? data.url
+            : `${location.origin}${data.url}`
+          resolve({ url, bpm: data.bpm, prompt: data.prompt })
+        } else if (data.status === 'error') {
+          reject(new Error(data.error || 'BGM生成中に不明なエラーが発生しました'))
+        } else {
+          setTimeout(poll, 1500) // 1.5秒待って再試行
+        }
+      } catch (err) {
+        reject(err)
+      }
+    }
+    poll()
+  })
 }
 
 onBeforeUnmount(() => {

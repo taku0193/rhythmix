@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+// この設定ファイルに統一し、vite.config.jsは削除してください。
 export default defineConfig({
   plugins: [vue()],
   server: {
