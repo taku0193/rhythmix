@@ -12,7 +12,7 @@ services:
       - ./backend/static:/app/static
       - ./backend/videos:/app/videos
       - ./logs:/app/logs
-      - /home/taku/test0/poses:/app/static/templates:ro
+#      - /home/taku/test0/poses:/app/static/templates:ro
     ports:
       - "8000:8000"
     environment:

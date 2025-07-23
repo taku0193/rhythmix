@@ -1,8 +1,11 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia' // Piniaをインポート
 import App from './App.vue'
+
 const pinia = createPinia() // Piniaインスタンスを作成
+const app = createApp(App)
 
-const app = createApp(App).mount('#app')
-app.use(pinia) // アプリケーションに登録
+// mount() の前に use() を呼び出す
+app.use(pinia)
 
+app.mount('#app')
