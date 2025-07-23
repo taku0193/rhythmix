@@ -1,0 +1,550 @@
+<!-- src/components/GameCanvas.vue -->
+<template>
+  <div class="game-canvas">
+    <!-- コントロール部 -->
+    <div class="controls">
+      <label>
+        BPM:
+        <input type="number" v-model="localBpm" />
+        <button @click="applyBpm">適用</button>
+      </label>
+      <label>
+        <input type="checkbox" v-model="loop" /> ループ再生
+      </label>
+      <label class="debug-toggle">
+        <input type="checkbox" v-model="showDebugDots" /> Debug Dots
+      </label>
+    </div>
+
+    <!-- メイン表示部 -->
+    <div class="split-container">
+      <!-- 左：動画＋ユーザ骨格 -->
+      <div class="pane video-pane">
+        <video ref="videoRef" autoplay muted playsinline />
+        <canvas ref="userCanvasRef" />
+
+        <!-- 心拍数表示 -->
+        <div v-if="displayBpm !== null" class="hr-display">
+          ❤️ {{ displayBpm }} bpm
+        </div>
+      </div>
+
+      <!-- 右：お手本骨格＋判定 -->
+      <div class="pane template-pane">
+        <div class="action-label" v-if="currentSegment">
+          ▶ {{ currentSegment.action }}
+        </div>
+        <div class="next-label" v-if="showNext">
+          ⏭ {{ nextSegment?.action }}
+        </div>
+        <div class="judgement" v-if="judgement">
+          {{ judgement }}
+        </div>
+        <div class="feedback" v-if="feedbackMessage">
+          {{ feedbackMessage }}
+        </div>
+        <canvas ref="templateCanvasRef" />
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import {
+  ref,
+  onMounted,
+  onBeforeUnmount,
+  computed,
+  defineProps,
+  defineEmits
+} from 'vue'
+import { Pose, POSE_CONNECTIONS } from '@mediapipe/pose'
+import { Camera } from '@mediapipe/camera_utils'
+
+import { judgePose } from '../utils/poseJudge'
+// rPPG worker
+import RppgWorker from '../workers/rppgWorker.ts?worker'
+import { sendHR } from '../utils/sendHR'
+
+// ======= props / emit =======
+const props = defineProps<{ bpm: number }>()
+const emit = defineEmits<{ (e: 'update:bpm', val: number): void }>()
+const localBpm = ref(props.bpm)
+function applyBpm() {
+  emit('update:bpm', localBpm.value)
+}
+
+// ======= ループ設定 =======
+const loop = ref(true)
+
+// ======= セグメント定義 =======
+interface Segment {
+  file: string
+  start: number
+  end: number
+  action: string
+  part: string
+  intensityLabel: string
+  intensity: number
+  template: string
+  duration: number
+}
+const segments = ref<Segment[]>([])
+const templateMap = ref<Record<string, Array<{ x: number; y: number }>>>({})
+
+const INTENSITY_MAP: Record<string, number> = {
+  '低': 0.2,
+  '中': 0.6,
+  '高': 0.9
+}
+
+// ======= 再生制御 =======
+const currentIndex = ref(0)
+let segmentStartTime = 0
+const elapsed = ref(0)
+const currentSegment = computed(() => segments.value[currentIndex.value] || null)
+const nextSegment = computed(() => {
+  if (!segments.value.length) return null
+  const nx = currentIndex.value + 1
+  return segments.value[nx < segments.value.length ? nx : (loop.value ? 0 : -1)] || null
+})
+const leadTime = 2
+const showNext = computed(
+  () =>
+    !!currentSegment.value &&
+    elapsed.value > currentSegment.value.duration - leadTime
+)
+
+// ======= refs =======
+const videoRef = ref<HTMLVideoElement>()
+const userCanvasRef = ref<HTMLCanvasElement>()
+const templateCanvasRef = ref<HTMLCanvasElement>()
+
+// ===== 判定用 =====
+const judgement = ref('')
+const feedbackMessage = ref('')
+let lastUserLm: Array<{ x: number; y: number }> = []
+let lastJudgeTime = 0
+const JUDGE_INTERVAL = 150 // ms
+
+// ===== rPPG 関連 =====
+const displayBpm = ref<number | null>(null)
+const rppgWorker = new RppgWorker()
+const showDebugDots = ref(false)
+
+let lastEstimateTime = 0
+let lastSendTime = 0
+const FRAME_SEND_INTERVAL = 50   // RGB送信間引き(ms)
+const ESTIMATE_INTERVAL = 1000   // 推定要求(ms)
+const HR_SEND_INTERVAL = 2000    // HRログ送信(ms)
+let lastHrPostTime = 0
+
+// ROI 抽出用
+const roiCanvas = document.createElement('canvas')
+const roiCtx = roiCanvas.getContext('2d')
+
+// HR 平滑化
+let prevBpm: number | null = null
+const SMOOTH_ALPHA = 0.3
+
+rppgWorker.onmessage = (e: MessageEvent) => {
+  if (e.data?.type === 'bpm') {
+    const { bpm: rawBpm, confidence } = e.data.payload || {}
+    if (typeof rawBpm === 'number') {
+      if (prevBpm === null) prevBpm = rawBpm
+      else prevBpm = prevBpm * (1 - SMOOTH_ALPHA) + rawBpm * SMOOTH_ALPHA
+      const rounded = Math.round(prevBpm)
+      displayBpm.value = rounded
+      ;(window as any).__HR_BPM__ = rounded
+
+      const now = performance.now()
+      if (now - lastHrPostTime > HR_SEND_INTERVAL) {
+        sendHR(rounded, confidence)
+        lastHrPostTime = now
+      }
+    }
+  }
+}
+
+// ===== CSV 読み込み =====
+function parseTime(s: string) {
+  const [m, sec] = s.split(':').map(Number)
+  return m * 60 + sec
+}
+async function loadCSV() {
+  const res = await fetch('/static/video_label.csv')
+  const lines = (await res.text()).trim().split('\n').slice(1)
+  segments.value = lines.map((l) => {
+    const [file, start, end, action, part, intensityLabel] = l.split(',')
+    const s = parseTime(start), e = parseTime(end)
+    const key = action
+      .replace(/\s*[（(]\s*/g, '_')
+      .replace(/[)）]/g, '')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+    return {
+      file,
+      start: s,
+      end: e,
+      action,
+      part,
+      intensityLabel,
+      intensity: INTENSITY_MAP[intensityLabel] ?? 0.5,
+      template: `${key}.json`,
+      duration: e - s
+    }
+  })
+}
+
+// ===== テンプレロード =====
+async function preloadTemplates() {
+  const names = Array.from(new Set(segments.value.map((s) => s.template)))
+  await Promise.all(
+    names.map(async (name) => {
+      const r = await fetch(`/static/templates/${encodeURIComponent(name)}`)
+      const raw: Array<{ frame_id: number; landmarks: Array<{ x: number; y: number }> }> = await r.json()
+      templateMap.value[name] = raw.map((f) => f.landmarks || [])
+    })
+  )
+}
+
+// ===== セグメント遷移 =====
+function nextSeg() {
+  currentIndex.value++
+  if (currentIndex.value >= segments.value.length) {
+    if (loop.value) currentIndex.value = 0
+    else return
+  }
+  segmentStartTime = performance.now()
+
+  const seg = segments.value[currentIndex.value]
+  if (seg) {
+    ;(window as any).__EX_INTENSITY__ = seg.intensity
+  }
+}
+
+// ===== テンプレ描画 & 判定 =====
+function renderTemplate() {
+  const canvas = templateCanvasRef.value!
+  const ctx = canvas.getContext('2d')!
+  const seg = currentSegment.value
+  if (!seg) return
+
+  elapsed.value = (performance.now() - segmentStartTime) / 1000
+  if (elapsed.value > seg.duration) nextSeg()
+
+  const seq = templateMap.value[seg.template] || []
+  if (!seq.length) {
+    requestAnimationFrame(renderTemplate)
+    return
+  }
+
+  const idx = Math.floor((elapsed.value / seg.duration) * seq.length) % seq.length
+  const lm = seq[idx] || []
+  if (!lm.length) {
+    requestAnimationFrame(renderTemplate)
+    return
+  }
+
+  const xs = lm.map((p) => p.x), ys = lm.map((p) => p.y)
+  const minX = Math.min(...xs), maxX = Math.max(...xs)
+  const minY = Math.min(...ys), maxY = Math.max(...ys)
+  const w = maxX - minX, h = maxY - minY
+
+  const baseScale = Math.min(canvas.width / w, canvas.height / h)
+  const scale = baseScale * 0.67
+  const offsetX = (canvas.width - w * scale) / 2 - minX * scale
+  const offsetY = (canvas.height - h * scale) / 2 - minY * scale
+
+  ctx.save()
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY)
+
+  // お手本骨格
+  ctx.strokeStyle = 'rgba(0,0,255,0.8)'
+  ctx.lineWidth = 2 / scale
+  for (const [i, j] of POSE_CONNECTIONS) {
+    const a = lm[i], b = lm[j]
+    if (!a || !b) continue
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.lineTo(b.x, b.y)
+    ctx.stroke()
+  }
+  ctx.fillStyle = 'rgba(0,0,255,0.8)'
+  for (const p of lm) {
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, 6 / scale, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // ===== 判定処理 =====
+  const now = performance.now()
+  if (lastUserLm.length && now - lastJudgeTime > JUDGE_INTERVAL) {
+    const jr = judgePose(lm, lastUserLm)
+    judgement.value = jr.grade
+    feedbackMessage.value = jr.message
+
+    // 誤差大きい関節を赤でマーキング
+    ctx.fillStyle = 'rgba(255,0,0,0.8)'
+    for (const j of jr.jointErrors) {
+      if (j.err <= 0.03) continue
+      const p = lm[j.index]
+      if (!p) continue
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, 8 / scale, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    lastJudgeTime = now
+  }
+
+  ctx.restore()
+  requestAnimationFrame(renderTemplate)
+}
+
+/**
+ * 額のROIを計算（簡易版）
+ */
+function calcForeheadROI(
+  landmarks: any[],
+  vw: number,
+  vh: number
+) {
+  const nose = landmarks[0],
+    lEye = landmarks[2],
+    rEye = landmarks[5]
+  if (!nose || !lEye || !rEye) return null
+
+  const cx = (1 - nose.x) * vw,
+    cy = nose.y * vh
+  const w = Math.abs((lEye.x - rEye.x) * vw) * 1.2,
+    h = w * 0.6
+
+  const x = cx - w / 2,
+    y = cy - h * 1.8
+
+  const X = Math.max(0, Math.min(vw - 1, x)),
+    Y = Math.max(0, Math.min(vh - 1, y))
+  const W = Math.max(1, Math.min(vw - X, w)),
+    H = Math.max(1, Math.min(vh - Y, h))
+  return { x: X, y: Y, w: W, h: H }
+}
+
+onMounted(async () => {
+  function fit(c: HTMLCanvasElement) {
+    c.width = c.clientWidth
+    c.height = c.clientHeight
+  }
+
+  // Pose + rPPG
+  const pose = new Pose({
+    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
+  })
+  pose.setOptions({
+    modelComplexity: 1,
+    smoothLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  })
+  pose.onResults((res) => {
+    const uc = userCanvasRef.value!,
+      ctx = uc.getContext('2d')!
+    ctx.clearRect(0, 0, uc.width, uc.height)
+
+    if (res.poseLandmarks) {
+      // ユーザー骨格保持（0〜1座標）
+      lastUserLm = res.poseLandmarks.map(p => ({ x: p.x, y: p.y }))
+
+      if (showDebugDots.value) {
+        ctx.fillStyle = 'rgba(255,0,0,0.8)'
+        for (const lm of res.poseLandmarks) {
+          ctx.beginPath()
+          ctx.arc(lm.x * uc.width, lm.y * uc.height, 5, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+
+      // ROI→rPPG
+      const video = videoRef.value!
+      if (video.videoWidth && video.videoHeight && roiCtx) {
+        const now = performance.now()
+        if (now - lastSendTime > FRAME_SEND_INTERVAL) {
+          const roi = calcForeheadROI(
+            res.poseLandmarks,
+            video.videoWidth,
+            video.videoHeight
+          )
+          if (roi) {
+            roiCanvas.width = roi.w
+            roiCanvas.height = roi.h
+            const sx = video.videoWidth - (roi.x + roi.w) // 左右反転分
+            roiCtx.drawImage(video, sx, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h)
+            const data = roiCtx.getImageData(0, 0, roi.w, roi.h).data
+            let r = 0, g = 0, b = 0, count = 0
+            for (let i = 0; i < data.length; i += 4) {
+              r += data[i]
+              g += data[i + 1]
+              b += data[i + 2]
+              count++
+            }
+            rppgWorker.postMessage({
+              type: 'pushRGB',
+              payload: {
+                r: r / count,
+                g: g / count,
+                b: b / count,
+                t: performance.now()
+              }
+            })
+            lastSendTime = now
+          }
+        }
+        if (now - lastEstimateTime > ESTIMATE_INTERVAL) {
+          rppgWorker.postMessage({ type: 'estimate' })
+          lastEstimateTime = now
+        }
+      }
+    }
+  })
+
+  new Camera(videoRef.value!, {
+    onFrame: async () => await pose.send({ image: videoRef.value! }),
+    width: 640,
+    height: 480
+  }).start()
+
+  await loadCSV()
+  await preloadTemplates()
+
+  if (segments.value.length) {
+    ;(window as any).__EX_INTENSITY__ = segments.value[0].intensity
+  }
+
+  segmentStartTime = performance.now()
+
+  fit(userCanvasRef.value!)
+  fit(templateCanvasRef.value!)
+  window.addEventListener('resize', () => {
+    fit(userCanvasRef.value!)
+    fit(templateCanvasRef.value!)
+  })
+
+  renderTemplate()
+})
+
+onBeforeUnmount(() => {
+  rppgWorker.terminate()
+})
+</script>
+
+<style scoped>
+.game-canvas {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+}
+.controls {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.split-container {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+  width: 100%;
+  height: 80vh;
+}
+.pane {
+  position: relative;
+  background: #f3f3f3;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.video-pane {
+  transform: scaleX(-1);
+}
+.video-pane .hr-display {
+  transform: scaleX(-1);
+  left: 12px;
+  right: auto;
+}
+video,
+canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.action-label {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-weight: bold;
+  z-index: 2;
+}
+.next-label {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  z-index: 2;
+}
+.judgement {
+  position: absolute;
+  bottom: 48px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 1.2em;
+  font-weight: bold;
+  z-index: 2;
+}
+.feedback {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  max-width: 60%;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  line-height: 1.3;
+  z-index: 2;
+}
+.hr-display {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-weight: bold;
+  color: #d60000;
+  z-index: 3;
+  font-size: 1.1em;
+}
+.debug-toggle {
+  font-size: 12px;
+  color: #333;
+}
+@media (max-width: 768px) {
+  .split-container {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+}
+</style>

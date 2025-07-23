@@ -1,0 +1,83 @@
+# ################ #
+#   Dependencies   #
+# ################ #
+
+# Node.js dependencies
+frontend/node_modules/
+
+# Python virtual environment
+# Common names for virtual environments are .venv, venv, env, etc.
+.venv/
+venv/
+env/
+ENV/
+
+# ################ #
+#      Builds      #
+# ################ #
+
+# Vite build output
+frontend/dist/
+
+# Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ################ #
+#      Logs        #
+# ################ #
+
+# Log directories and files
+logs/
+*.log
+*.jsonl
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ################ #
+#  Generated Media #
+# ################ #
+
+# Generated background music files
+backend/static/audio/
+
+# Large video files (Consider using Git LFS for these instead)
+backend/videos/
+
+frontend/package-lock.json
+
+backend/requirements.txt
+
+backend/static/templates/
+
+
+# ################ #
+#   OS & Editor    #
+# ################ #
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# VSCode
+.vscode/
+
+# PyCharm/IntelliJ
+.idea/
+
+# ################ #
+#  Miscellaneous   #
+# ################ #
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Strange file found in your tree, likely not needed in repo
+=4.32.2

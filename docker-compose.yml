@@ -1,0 +1,33 @@
+version: '2.4'   # ← v2 系に戻す
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    working_dir: /app
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/scripts:/app/scripts
+      - ./backend/static:/app/static
+      - ./backend/videos:/app/videos
+      - ./logs:/app/logs
+      - /home/taku/test0/poses:/app/static/templates:ro
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - APP_TZ=Asia/Tokyo
+      - TZ=Asia/Tokyo 
+    runtime: nvidia   # ← これで --runtime=nvidia が付与される
+
+  frontend:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
