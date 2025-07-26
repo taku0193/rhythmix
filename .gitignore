@@ -49,9 +49,10 @@ backend/videos/
 
 frontend/package-lock.json
 
-backend/requirements.txt
 
 backend/static/templates/
+
+backend/static/templates_1/
 
 
 # ################ #

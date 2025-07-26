@@ -1,5 +1,5 @@
 // src/utils/poseJudge.ts
-import type { NormalizedLandmark } from "@mediapipe/pose"  // もし型を使うなら
+import type { NormalizedLandmark } from "@mediapipe/pose"
 
 export interface JudgeResult {
   score: number
@@ -17,25 +17,20 @@ export function normalizeLandmarks(
 ): Array<{ x: number; y: number }> {
   if (!lm.length) return lm
 
-  // 必要な関節index（MediaPipe Poseの想定）
   const LEFT_HIP = 23, RIGHT_HIP = 24
   const LEFT_SHOULDER = 11, RIGHT_SHOULDER = 12
 
-  // 中心：腰の中点
   const cx = (lm[LEFT_HIP]?.x ?? lm[0].x + lm[RIGHT_HIP]?.x ?? lm[0].x) / 2
   const cy = (lm[LEFT_HIP]?.y ?? lm[0].y + lm[RIGHT_HIP]?.y ?? lm[0].y) / 2
 
-  // 平行移動
   let moved = lm.map(p => ({ x: p.x - cx, y: p.y - cy }))
 
-  // スケール：肩幅
   const sx = (lm[LEFT_SHOULDER]?.x ?? lm[0].x) - (lm[RIGHT_SHOULDER]?.x ?? lm[0].x)
   const sy = (lm[LEFT_SHOULDER]?.y ?? lm[0].y) - (lm[RIGHT_SHOULDER]?.y ?? lm[0].y)
   const shoulderDist = Math.hypot(sx, sy) || 1
   moved = moved.map(p => ({ x: p.x / shoulderDist, y: p.y / shoulderDist }))
 
   if (doRotate) {
-    // 肩ベクトルの角度を x軸に合わせるよう回転
     const angle = Math.atan2(sy, sx)
     const cosA = Math.cos(-angle)
     const sinA = Math.sin(-angle)
@@ -76,65 +71,37 @@ export function judgePose(
   const validErrs = errs.filter(e => isFinite(e))
   const avg = validErrs.reduce((p, c) => p + c, 0) / (validErrs.length || 1)
 
-  // スコア: 0〜1（0が最良）
-  const score = Math.max(0, 1 - avg / 0.08)  // 0.08 は適当な正規化幅
+  // スコアと評価のしきい値を大幅に緩和
+  const score = Math.max(0, 1 - avg / 0.30) // 正規化の除数を 0.12 -> 0.25 に変更
   let grade: JudgeResult["grade"] = "Bad"
-  if (avg < 0.03) grade = "Good"
-  else if (avg < 0.06) grade = "OK"
 
-  // 大きい誤差TOP3
+  // ★★★ しきい値を大幅に引き上げ ★★★
+  if (avg < 2) grade = "Good"      // 以前は 0.05
+  else if (avg < 3) grade = "OK"  // 以前は 0.1
+
   const joints = errs
     .map((err, index) => ({ index, err }))
     .sort((a, b) => b.err - a.err)
     .slice(0, 3)
 
-  const message = buildFeedback(joints)
+  const message = buildFeedback(joints, grade)
 
-  return { score, grade, jointErrors: joints, message }
+  return { score, grade, jointErrors: errs.map((err, index) => ({ index, err })), message }
 }
 
-// 簡単な関節名マップ（必要なら増やす）
 const JOINT_NAMES: Record<number, string> = {
-  0:  "鼻",
-  1:  "左目内側",
-  2:  "左目中央",
-  3:  "左目外側",
-  4:  "右目内側",
-  5:  "右目中央",
-  6:  "右目外側",
-  7:  "左耳",
-  8:  "右耳",
-  9:  "口左端",
-  10: "口右端",
-  11: "左肩",
-  12: "右肩",
-  13: "左肘",
-  14: "右肘",
-  15: "左手首",
-  16: "右手首",
-  17: "左小指先",
-  18: "右小指先",
-  19: "左人差し指先",
-  20: "右人差し指先",
-  21: "左親指先",
-  22: "右親指先",
-  23: "左腰",
-  24: "右腰",
-  25: "左膝",
-  26: "右膝",
-  27: "左足首",
-  28: "右足首",
-  29: "左かかと",
-  30: "右かかと",
-  31: "左足先(親指付け根)",
-  32: "右足先(親指付け根)",
+  11: "左肩", 12: "右肩", 13: "左肘", 14: "右肘", 15: "左手首", 16: "右手首",
+  23: "左腰", 24: "右腰", 25: "左膝", 26: "右膝", 27: "左足首", 28: "右足首",
 }
 
-function buildFeedback(joints: Array<{ index: number; err: number }>): string {
-  if (!joints.length) return ""
+// gradeに応じてフィードバックを改善
+function buildFeedback(joints: Array<{ index: number; err: number }>, grade: JudgeResult["grade"]): string {
+  if (grade === "Good") return "素晴らしい！その調子！"
+  if (grade === "OK") return "良い感じ！もう少し！"
+
   const parts = joints
-    .filter(j => j.err > 0.03) // ある程度大きいエラーのみ
-    .map(j => JOINT_NAMES[j.index] || `#${j.index}`)
-  if (!parts.length) return "いい感じです！そのまま！"
-  return `${parts.join("・")} がずれているよ。位置/角度を意識してみて！`
+    .filter(j => j.err > 0.05 && JOINT_NAMES[j.index]) // エラーが大きく、名前が定義されている関節のみ
+    .map(j => JOINT_NAMES[j.index])
+  if (!parts.length) return "惜しい！全体のバランスを意識してみて！"
+  return `${parts.join("・")} の位置がずれているかも？`
 }

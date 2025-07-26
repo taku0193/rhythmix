@@ -63,24 +63,36 @@ def save_wav_and_estimate_bpm(wav_np: np.ndarray) -> Tuple[str, int]:
 
 
 def pick_mood(hr: Optional[int], intensity: Optional[float]) -> str:
+    """
+    心拍数と運動強度に基づいて音楽生成のプロンプトを選択する。
+    心拍数が高い場合は、クールダウンを最優先する。
+    """
+    
+    # 1. 心拍数が高い場合（140以上）は、運動強度に関わらずクールダウンを促すプロンプトを返す
+    if hr is not None and hr >= 140:
+        return "calm and relaxing, slow tempo, gentle melody for cool down"
+
+    # 2. 心拍数が高くない場合、運動強度に基づいてプロンプトを決定する
     if intensity is not None:
         if intensity >= 0.8:
-            return "very high-energy, aggressive rhythm, heavy drums"
+            return "very high-energy, aggressive rhythm"
         if intensity >= 0.5:
-            return "upbeat, driving beat, bright synths"
+            return "upbeat, driving beat"
         if intensity <= 0.2:
             return "chill, soft pads, minimal percussion"
+        # 中程度の運動強度の場合
         return "moderately upbeat, catchy melody"
 
+    # 3. 運動強度のデータがない場合は、残りの心拍数の範囲でフォールバックする
     if hr is not None:
-        if hr >= 140:
-            return "very high-energy, aggressive rhythm, heavy drums"
-        if hr >= 120:
-            return "upbeat, driving beat, bright synths"
+        if hr >= 120:  # この条件は実質的に120-139の範囲になる
+            return "upbeat, driving beat"
         if hr <= 90:
             return "calm and relaxed, soft pads, minimal percussion"
+        # 中程度の心拍数の場合
         return "moderately upbeat, catchy melody"
 
+    # 4. 心拍数も運動強度のデータもない場合のデフォルトプロンプト
     return "moderately upbeat, catchy melody"
 
 

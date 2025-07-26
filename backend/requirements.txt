@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+opencv-python
+mediapipe
+moviepy
+numpy<2>
+librosa
+soundfile
+python-multipart
+audiocraft	# for MusicGen AI model
+torch>=2.6.0
