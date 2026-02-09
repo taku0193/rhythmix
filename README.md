@@ -13,9 +13,13 @@
 
 **クイックスタート**
 
-1. `docker compose up --build`
-2. ブラウザで `http://localhost:5173` を開く
-3. カメラ許可 → プロンプト入力 → `生成`
+```bash
+docker compose up --build
+```
+
+```text
+http://localhost:5173
+```
 
 **備考**
 - バックエンドは `http://localhost:8000`
@@ -54,7 +58,7 @@ flowchart LR
   C --> D[フィードバック表示]
 
   A --> E[額ROI抽出]
-  E --> F[rPPG(POS法) + FFT]
+  E --> F["rPPG(POS法) + FFT"]
   F --> G[心拍(bpm)]
 
   H[テンプレJSON/ラベルCSV] --> C
@@ -77,7 +81,7 @@ flowchart LR
 - 額ROIからRGB平均を取得
 - POS法 + FFTでピーク周波数を抽出
 - 信頼度や変化量でスムージング
-- /api/hr に定期送信
+- `/api/hr` に定期送信
 
 🟩 **BGM 生成**
 - 1曲目: ユーザープロンプト
@@ -91,14 +95,80 @@ flowchart LR
 
 ---
 
-**API**
+**API（コピー可能な例）**
 
-- `POST /api/generate-bgm` — 本文: `{ prompt?, duration, bpm?, hr?, intensity? }` — 応答: `{ success, url, bpm, prompt }`
-- `POST /api/generate-music` — 本文: `{ prompt, duration }` — 応答: WAVストリーミング
-- `POST /api/infer_tempo_by_events` — 本文: `multipart/form-data (video)` — 応答: `{ bpm, events, intervals }`
-- `POST /api/hr` — 本文: `{ hr, confidence? }` — 応答: `{ ok: true }`
-- `GET /api/templates` — 応答: `['xxx.json', ...]`
-- `WS /ws` — WebSocket ブロードキャスト
+**BGM生成** `POST /api/generate-bgm`
+
+```json
+{
+  "prompt": "upbeat workout track",
+  "duration": 15,
+  "bpm": 120,
+  "hr": 128,
+  "intensity": 0.7
+}
+```
+
+```json
+{
+  "success": true,
+  "url": "http://localhost:8000/static/audio/bgm_xxx.wav",
+  "bpm": 123,
+  "prompt": "..."
+}
+```
+
+**シンプル生成** `POST /api/generate-music`
+
+```json
+{
+  "prompt": "upbeat workout track",
+  "duration": 12
+}
+```
+
+**テンポ推定（動画）** `POST /api/infer_tempo_by_events`
+
+```bash
+curl -X POST \
+  -F "video=@/path/to/video.mp4" \
+  "http://localhost:8000/api/infer_tempo_by_events"
+```
+
+```json
+{
+  "bpm": 120,
+  "events": [0.3, 0.8, 1.3],
+  "intervals": [0.5, 0.5]
+}
+```
+
+**心拍ログ** `POST /api/hr`
+
+```json
+{
+  "hr": 120,
+  "confidence": 0.8
+}
+```
+
+```json
+{
+  "ok": true
+}
+```
+
+**テンプレ一覧** `GET /api/templates`
+
+```json
+["xxx.json", "yyy.json"]
+```
+
+**WebSocket** `/ws`
+
+```text
+任意の文字列を送信すると、他のクライアントにブロードキャストされます。
+```
 
 ---
 
@@ -115,14 +185,20 @@ flowchart LR
 **開発 (ローカル)**
 
 フロントエンド:
-- `cd frontend`
-- `npm install`
-- `npm run dev -- --host 0.0.0.0 --port 5173`
+
+```bash
+cd frontend
+npm install
+npm run dev -- --host 0.0.0.0 --port 5173
+```
 
 バックエンド:
-- `cd backend`
-- `pip install -r requirements.txt`
-- `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
 ---
 
