@@ -53,18 +53,18 @@ http://localhost:5173
 
 ```mermaid
 flowchart LR
-  A[Webカメラ] --> B[MediaPipe Pose]
-  B --> C[姿勢正規化 + 判定]
-  C --> D[フィードバック表示]
+  A["Webカメラ"] --> B["MediaPipe Pose"]
+  B --> C["姿勢正規化・判定"]
+  C --> D["フィードバック表示"]
 
-  A --> E[額ROI抽出]
-  E --> F["rPPG(POS法) + FFT"]
-  F --> G[心拍(bpm)]
+  A --> E["額ROI抽出"]
+  E --> F["rPPG / POS / FFT"]
+  F --> G["心拍BPM"]
 
-  H[テンプレJSON/ラベルCSV] --> C
-  G --> I[プロンプト生成ロジック]
-  I --> J[MusicGen 生成]
-  J --> K[BGM再生 + クロスフェード]
+  H["テンプレJSON・ラベルCSV"] --> C
+  G --> I["プロンプト生成ロジック"]
+  I --> J["MusicGen 生成"]
+  J --> K["BGM再生・クロスフェード"]
 ```
 
 ---
